@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import os
+from argparse import Namespace
+from types import SimpleNamespace
 
-from tr_hash_server.cli import build_launch_environment, build_server_command
+from tr_hash_server.cli import (
+    _probe_nvidia_devices,
+    build_launch_environment,
+    build_server_command,
+    cmd_healthcheck,
+    cmd_wait_gpu,
+)
 
 
 def test_home_server_defaults(monkeypatch):
@@ -42,3 +50,73 @@ def test_gpu_order_matches_nvidia_smi(monkeypatch):
     environment = build_launch_environment()
     assert environment["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
     assert environment["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_gpu_probe_uses_nvidia_smi_without_pytorch(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout="NVIDIA GeForce RTX 5060 Ti, 00000000:07:00.0, GPU-test\n",
+            stderr="",
+        )
+
+    monkeypatch.setenv("TR_HASH_DEVICES", "1")
+    monkeypatch.setattr("tr_hash_server.cli.subprocess.run", fake_run)
+    healthy, detail = _probe_nvidia_devices()
+
+    assert healthy
+    assert "RTX 5060 Ti" in detail
+    assert calls == [[
+        "nvidia-smi",
+        "--id",
+        "1",
+        "--query-gpu=name,pci.bus_id,uuid",
+        "--format=csv,noheader",
+    ]]
+    assert all("python" not in part.lower() for part in calls[0])
+
+
+def test_wait_gpu_requires_stable_visibility(monkeypatch, capsys):
+    probes = iter(
+        [
+            (False, "GPU 1 unavailable"),
+            (True, "GPU 1 ready"),
+            (True, "GPU 1 ready"),
+        ]
+    )
+    clock = iter([0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    monkeypatch.setattr("tr_hash_server.cli._probe_nvidia_devices", lambda: next(probes))
+    monkeypatch.setattr("tr_hash_server.cli.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("tr_hash_server.cli.time.sleep", lambda _seconds: None)
+
+    result = cmd_wait_gpu(Namespace(timeout=30.0, interval=0.0, stable_for=1.0))
+
+    assert result == 0
+    assert "GPU READY" in capsys.readouterr().out
+
+
+def test_healthcheck_refuses_restart_when_egpu_is_lost(monkeypatch, tmp_path, capsys):
+    restarts = []
+    monkeypatch.setenv("TR_HASH_HEALTH_FAILURES", "1")
+    monkeypatch.setattr(
+        "tr_hash_server.cli._ready", lambda _url, _timeout: (False, "connection refused")
+    )
+    monkeypatch.setattr(
+        "tr_hash_server.cli._probe_nvidia_devices",
+        lambda: (False, "GPU 1: Unknown Error"),
+    )
+    monkeypatch.setattr(
+        "tr_hash_server.cli.subprocess.run",
+        lambda command, **_kwargs: restarts.append(command),
+    )
+
+    result = cmd_healthcheck(
+        Namespace(state_file=str(tmp_path / "failures"), timeout=0.1, no_restart=False)
+    )
+
+    assert result == 2
+    assert restarts == []
+    assert "refusing a restart loop" in capsys.readouterr().out

@@ -11,6 +11,7 @@ This project owns the Fedora host lifecycle around that engine.
 | --- | --- |
 | Display | GPU 0 — NVIDIA GeForce GTX 1660 Ti, 6 GB |
 | Inference | GPU 1 — NVIDIA GeForce RTX 5060 Ti, 16 GB |
+| GPU transport | Thunderbolt 3 eGPU enclosure, 40 Gb/s negotiated link |
 | Runtime | `/home/boris/pytorch` |
 | Service manager | systemd |
 | Default model | TR-HASH MoE 200M Full SFT v1, 32K |
@@ -29,8 +30,17 @@ as `boris` avoids a root-owned inference process, while the root healthcheck can
 restart the complete service after three consecutive `/ready` failures. The
 installer places its small management runtime under `/usr/local/lib` so SELinux
 never needs to execute Python from a home directory.
-The unit also waits for the configured CUDA device through the same PyTorch
-runtime before launching, preventing an accidental CPU fallback during boot.
+The unit waits for the configured GPU through `nvidia-smi` without importing
+PyTorch in a disposable process. This matters for the Thunderbolt eGPU: a
+PyTorch preflight would create and immediately destroy a CUDA context just
+before the inference server creates its long-lived context. The selected GPU
+must remain continuously visible for 15 seconds before launch.
+
+Restarts are deliberately slow and bounded. A stop includes a 10-second eGPU
+cooldown, automatic restarts wait 20 seconds, and systemd permits only two
+attempts per five minutes. The readiness watchdog refuses to restart the
+service when NVML can no longer reach the GPU, avoiding a destructive restart
+loop after an NVIDIA Xid 79 / PCIe link loss.
 
 ## Install on the server
 

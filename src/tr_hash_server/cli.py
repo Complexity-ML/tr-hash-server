@@ -67,6 +67,50 @@ def build_launch_environment() -> dict[str, str]:
     return environment
 
 
+def _requested_devices() -> list[str]:
+    return [
+        part.strip()
+        for part in _value("TR_HASH_DEVICES", "1").split(",")
+        if part.strip()
+    ]
+
+
+def _probe_nvidia_devices() -> tuple[bool, str]:
+    """Probe selected GPUs through NVML without creating a CUDA context.
+
+    Starting a short-lived PyTorch process immediately before the inference
+    process creates and tears down a CUDA context.  That lifecycle is unsafe on
+    some Thunderbolt eGPU stacks.  ``nvidia-smi`` verifies that the selected
+    device is reachable without importing PyTorch in a disposable process.
+    """
+
+    devices = _requested_devices()
+    if not devices:
+        return False, "TR_HASH_DEVICES is empty"
+    details: list[str] = []
+    for device in devices:
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--id",
+                    device,
+                    "--query-gpu=name,pci.bus_id,uuid",
+                    "--format=csv,noheader",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            return False, "nvidia-smi not found"
+        detail = (result.stdout or result.stderr).strip()
+        if result.returncode != 0 or not detail:
+            return False, f"GPU {device}: {detail or 'nvidia-smi failed'}"
+        details.append(f"GPU {device}: {detail}")
+    return True, "; ".join(details)
+
+
 def cmd_launch(_: argparse.Namespace) -> int:
     command = build_server_command()
     executable = Path(command[0])
@@ -82,31 +126,20 @@ def cmd_launch(_: argparse.Namespace) -> int:
 
 
 def cmd_wait_gpu(args: argparse.Namespace) -> int:
-    executable = Path(_value("TR_HASH_EXECUTABLE", "/home/boris/pytorch/bin/tr-hash-i64"))
-    python = executable.with_name("python")
-    if not python.is_file():
-        raise SystemExit(f"PyTorch interpreter not found beside TR-Hash-i64: {python}")
-    probe = (
-        "import sys, torch; "
-        "ok=torch.cuda.is_available() and torch.cuda.device_count() == 1; "
-        "print(torch.cuda.get_device_name(0) if ok else 'CUDA unavailable'); "
-        "sys.exit(0 if ok else 1)"
-    )
-    environment = build_launch_environment()
     deadline = time.monotonic() + args.timeout
-    last_detail = "CUDA probe did not run"
+    stable_for = max(0.0, args.stable_for)
+    stable_since: float | None = None
+    last_detail = "GPU probe did not run"
     while time.monotonic() < deadline:
-        result = subprocess.run(
-            [str(python), "-c", probe],
-            env=environment,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        last_detail = (result.stdout or result.stderr).strip()
-        if result.returncode == 0:
-            print(f"GPU READY: {last_detail}")
-            return 0
+        healthy, last_detail = _probe_nvidia_devices()
+        now = time.monotonic()
+        if healthy:
+            stable_since = stable_since if stable_since is not None else now
+            if now - stable_since >= stable_for:
+                print(f"GPU READY: {last_detail} (stable {stable_for:.0f}s)")
+                return 0
+        else:
+            stable_since = None
         time.sleep(args.interval)
     raise SystemExit(f"GPU unavailable after {args.timeout:.0f}s: {last_detail}")
 
@@ -139,6 +172,10 @@ def cmd_healthcheck(args: argparse.Namespace) -> int:
     state.write_text(f"{failures}\n", encoding="utf-8")
     print(f"NOT READY {url} ({detail}); failure {failures}/{threshold}")
     if failures >= threshold and not args.no_restart:
+        gpu_healthy, gpu_detail = _probe_nvidia_devices()
+        if not gpu_healthy:
+            print(f"GPU UNAVAILABLE: {gpu_detail}; refusing a restart loop")
+            return 2
         subprocess.run(["systemctl", "restart", SERVICE], check=True)
         state.write_text("0\n", encoding="utf-8")
         print(f"Restarted {SERVICE}")
@@ -296,6 +333,12 @@ def parser() -> argparse.ArgumentParser:
     wait_gpu = sub.add_parser("wait-gpu", help="Wait until the configured CUDA GPU is usable")
     wait_gpu.add_argument("--timeout", type=float, default=180.0)
     wait_gpu.add_argument("--interval", type=float, default=2.0)
+    wait_gpu.add_argument(
+        "--stable-for",
+        type=float,
+        default=float(_value("TR_HASH_EGPU_STABLE_SECONDS", "15")),
+        help="Require continuous NVML availability before launch (default: 15s)",
+    )
     wait_gpu.set_defaults(func=cmd_wait_gpu)
     health = sub.add_parser("healthcheck", help="Check /ready and restart after repeated failures")
     health.add_argument("--state-file", default=str(DEFAULT_STATE))

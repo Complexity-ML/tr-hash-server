@@ -3,6 +3,8 @@ Description=TR-Hash-i64 home inference server
 Documentation=https://github.com/Complexity-ML/TR-Hash-i64
 Wants=network-online.target nvidia-persistenced.service
 After=network-online.target nvidia-persistenced.service
+StartLimitIntervalSec=5min
+StartLimitBurst=2
 
 [Service]
 Type=simple
@@ -12,9 +14,10 @@ EnvironmentFile=/etc/tr-hash-server/server.env
 ExecStartPre=/usr/local/bin/tr-hash-server wait-gpu --timeout 180
 ExecStart=/usr/local/bin/tr-hash-server launch
 Restart=on-failure
-RestartSec=5s
+RestartSec=20s
 TimeoutStartSec=10min
 TimeoutStopSec=90s
+ExecStopPost=/usr/bin/sleep 10
 KillMode=control-group
 NoNewPrivileges=true
 PrivateTmp=true
