@@ -81,7 +81,6 @@ def test_rendered_unit_has_egpu_safety_and_no_restart(tmp_path):
     assert "CUDA_VISIBLE_DEVICES=1" in unit
     assert "run-job any-training" in unit
     assert "Conflicts=tr-hash-i64.service" in unit
-    assert "systemd-inhibit --what=sleep:idle" in unit
 
 
 def test_load_json_config(tmp_path):

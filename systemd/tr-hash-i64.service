@@ -12,7 +12,7 @@ User=boris
 Group=boris
 EnvironmentFile=/etc/tr-hash-server/server.env
 ExecStartPre=/usr/local/bin/tr-hash-server wait-gpu --timeout 180
-ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --who=TR-Hash-Server --why=TR-HASH-eGPU-inference --mode=block /usr/local/bin/tr-hash-server launch
+ExecStart=/usr/local/bin/tr-hash-server launch
 Restart=on-failure
 RestartSec=20s
 TimeoutStartSec=10min
