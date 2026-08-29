@@ -14,6 +14,7 @@ This project owns the Fedora host lifecycle around that engine.
 | Runtime | `/home/boris/pytorch` |
 | Service manager | systemd |
 | Default model | TR-HASH MoE 200M Full SFT v1, 32K |
+| Runtime dtype | FP32, matching the released checkpoint metadata |
 | Quantization | none |
 
 `CUDA_DEVICE_ORDER=PCI_BUS_ID` keeps CUDA ordinals aligned with `nvidia-smi`,
