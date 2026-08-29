@@ -69,13 +69,15 @@ def test_gpu_probe_uses_nvidia_smi_without_pytorch(monkeypatch):
 
     assert healthy
     assert "RTX 5060 Ti" in detail
-    assert calls == [[
-        "nvidia-smi",
-        "--id",
-        "1",
-        "--query-gpu=name,pci.bus_id,uuid",
-        "--format=csv,noheader",
-    ]]
+    assert calls == [
+        [
+            "nvidia-smi",
+            "--id",
+            "1",
+            "--query-gpu=name,pci.bus_id,uuid",
+            "--format=csv,noheader",
+        ]
+    ]
     assert all("python" not in part.lower() for part in calls[0])
 
 
@@ -88,7 +90,9 @@ def test_wait_gpu_requires_stable_visibility(monkeypatch, capsys):
         ]
     )
     clock = iter([0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
-    monkeypatch.setattr("tr_hash_server.cli._probe_nvidia_devices", lambda: next(probes))
+    monkeypatch.setattr(
+        "tr_hash_server.cli._probe_nvidia_devices", lambda: next(probes)
+    )
     monkeypatch.setattr("tr_hash_server.cli.time.monotonic", lambda: next(clock))
     monkeypatch.setattr("tr_hash_server.cli.time.sleep", lambda _seconds: None)
 
@@ -102,7 +106,8 @@ def test_healthcheck_refuses_restart_when_egpu_is_lost(monkeypatch, tmp_path, ca
     restarts = []
     monkeypatch.setenv("TR_HASH_HEALTH_FAILURES", "1")
     monkeypatch.setattr(
-        "tr_hash_server.cli._ready", lambda _url, _timeout: (False, "connection refused")
+        "tr_hash_server.cli._ready",
+        lambda _url, _timeout: (False, "connection refused"),
     )
     monkeypatch.setattr(
         "tr_hash_server.cli._probe_nvidia_devices",

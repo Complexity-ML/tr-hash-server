@@ -1,0 +1,23 @@
+name = "example-training"
+command = [
+  "/home/boris/pytorch/bin/python",
+  "-m",
+  "complexity.train",
+  "--config",
+  "/home/boris/training/config.toml",
+]
+working_directory = "/home/boris/complexity-framework"
+gpu_devices = ["1"]
+
+[environment]
+PYTHONUNBUFFERED = "1"
+PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
+
+[checkpoint]
+directory = "/home/boris/checkpoints/example-training"
+pattern = "step_*"
+resume_arguments = ["--resume", "{checkpoint}"]
+
+[egpu]
+stable_seconds = 30
+poll_seconds = 5

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import grp
+import json
 import os
 import pwd
 import secrets
 import shutil
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -60,9 +60,7 @@ def build_server_command() -> list[str]:
 
 def build_launch_environment() -> dict[str, str]:
     environment = os.environ.copy()
-    environment["CUDA_DEVICE_ORDER"] = _value(
-        "TR_HASH_CUDA_DEVICE_ORDER", "PCI_BUS_ID"
-    )
+    environment["CUDA_DEVICE_ORDER"] = _value("TR_HASH_CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     environment["CUDA_VISIBLE_DEVICES"] = _value("TR_HASH_DEVICES", "1")
     return environment
 
@@ -189,7 +187,9 @@ def _gpu_rows() -> list[str]:
         "--format=csv,noheader,nounits",
     ]
     try:
-        output = subprocess.run(command, check=True, text=True, capture_output=True).stdout
+        output = subprocess.run(
+            command, check=True, text=True, capture_output=True
+        ).stdout
     except (FileNotFoundError, subprocess.CalledProcessError):
         return []
     return [line.strip() for line in output.splitlines() if line.strip()]
@@ -204,8 +204,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"{symbol:<4} {label:<18} {detail}")
         failures += int(not ok)
 
-    executable = Path(_value("TR_HASH_EXECUTABLE", "/home/boris/pytorch/bin/tr-hash-i64"))
-    report(executable.is_file() and os.access(executable, os.X_OK), "executable", str(executable))
+    executable = Path(
+        _value("TR_HASH_EXECUTABLE", "/home/boris/pytorch/bin/tr-hash-i64")
+    )
+    report(
+        executable.is_file() and os.access(executable, os.X_OK),
+        "executable",
+        str(executable),
+    )
     workdir = Path(_value("TR_HASH_WORKING_DIRECTORY", "/home/boris"))
     report(workdir.is_dir(), "working directory", str(workdir))
     api_key = _value("TR_HASH_API_KEY_FILE", "")
@@ -220,12 +226,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             f"{path} mode={mode:04o} uid={metadata.st_uid if metadata else '-'}",
         )
     rows = _gpu_rows()
-    report(bool(rows), "NVIDIA driver", "; ".join(rows) if rows else "nvidia-smi failed")
+    report(
+        bool(rows), "NVIDIA driver", "; ".join(rows) if rows else "nvidia-smi failed"
+    )
     devices = _value("TR_HASH_DEVICES", "1")
     indexes = {row.split(",", 1)[0].strip() for row in rows}
     requested = {part.strip() for part in devices.split(",") if part.strip()}
     report(bool(requested) and requested <= indexes, "CUDA devices", devices)
-    healthy, detail = _ready(_value("TR_HASH_READY_URL", "http://127.0.0.1:7860/ready"), args.timeout)
+    healthy, detail = _ready(
+        _value("TR_HASH_READY_URL", "http://127.0.0.1:7860/ready"), args.timeout
+    )
     report(healthy, "readiness", detail)
     return 1 if failures else 0
 
@@ -247,6 +257,95 @@ def cmd_logs(args: argparse.Namespace) -> int:
     if args.follow:
         command.append("-f")
     return _run(command)
+
+
+def cmd_job_submit(args: argparse.Namespace) -> int:
+    from tr_hash_server.jobs import submit_job
+
+    return submit_job(
+        Path(args.config),
+        user=args.user,
+        group=args.group,
+        start=not args.no_start,
+        enable_on_boot=args.enable_on_boot,
+    )
+
+
+def cmd_run_job(args: argparse.Namespace) -> int:
+    from tr_hash_server.jobs import run_job
+
+    return run_job(args.name)
+
+
+def cmd_job_list(_: argparse.Namespace) -> int:
+    from tr_hash_server.jobs import DEFAULT_JOBS_ROOT, state_for, unit_name
+
+    if not DEFAULT_JOBS_ROOT.exists():
+        print("No jobs")
+        return 0
+    for root in sorted(path for path in DEFAULT_JOBS_ROOT.iterdir() if path.is_dir()):
+        try:
+            state = state_for(root.name)
+            active = subprocess.run(
+                ["systemctl", "is-active", unit_name(root.name)],
+                text=True,
+                capture_output=True,
+                check=False,
+            ).stdout.strip()
+            print(
+                f"{root.name:<32} {state.get('status', 'unknown'):<18} {active or 'inactive'}"
+            )
+        except ValueError:
+            continue
+    return 0
+
+
+def cmd_job_status(args: argparse.Namespace) -> int:
+    from tr_hash_server.jobs import state_for, unit_name
+
+    print(json.dumps(state_for(args.name), indent=2, sort_keys=True))
+    return _run(["systemctl", "--no-pager", "--full", "status", unit_name(args.name)])
+
+
+def cmd_job_logs(args: argparse.Namespace) -> int:
+    from tr_hash_server.jobs import unit_name
+
+    command = ["journalctl", "-u", unit_name(args.name), "-n", str(args.lines)]
+    if args.follow:
+        command.append("-f")
+    return _run(command)
+
+
+def cmd_job_stop(args: argparse.Namespace) -> int:
+    from tr_hash_server.jobs import unit_name
+
+    if os.geteuid() != 0:
+        raise SystemExit("job stop must be run with sudo")
+    return _run(["systemctl", "stop", unit_name(args.name)])
+
+
+def cmd_job_resume(args: argparse.Namespace) -> int:
+    from tr_hash_server.jobs import mark_queued, unit_name
+
+    if os.geteuid() != 0:
+        raise SystemExit("job resume must be run with sudo")
+    mark_queued(args.name)
+    subprocess.run(["systemctl", "reset-failed", unit_name(args.name)], check=False)
+    return _run(["systemctl", "start", unit_name(args.name)])
+
+
+def cmd_job_remove(args: argparse.Namespace) -> int:
+    from tr_hash_server.jobs import DEFAULT_JOBS_ROOT, SYSTEMD_ROOT, unit_name
+
+    if os.geteuid() != 0:
+        raise SystemExit("job remove must be run with sudo")
+    unit = unit_name(args.name)
+    subprocess.run(["systemctl", "disable", "--now", unit], check=False)
+    (SYSTEMD_ROOT / unit).unlink(missing_ok=True)
+    shutil.rmtree(DEFAULT_JOBS_ROOT / args.name, ignore_errors=True)
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+    print(f"Removed job {args.name}; external checkpoints were preserved")
+    return 0
 
 
 def cmd_install(args: argparse.Namespace) -> int:
@@ -271,7 +370,12 @@ def cmd_install(args: argparse.Namespace) -> int:
     config_directory.mkdir(mode=0o750, parents=True, exist_ok=True)
     os.chown(config_directory, 0, service_group)
     os.chmod(config_directory, 0o750)
-    Path("/var/lib/tr-hash-server").mkdir(mode=0o755, parents=True, exist_ok=True)
+    state_directory = Path("/var/lib/tr-hash-server")
+    state_directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    jobs_directory = state_directory / "jobs"
+    jobs_directory.mkdir(mode=0o750, parents=True, exist_ok=True)
+    os.chown(jobs_directory, service_account.pw_uid, service_group)
+    os.chmod(jobs_directory, 0o750)
     library = Path("/usr/local/lib/tr-hash-server")
     destination_package = library / "tr_hash_server"
     library.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -313,6 +417,7 @@ def cmd_install(args: argparse.Namespace) -> int:
                 "/usr/local/bin/tr-hash-server",
                 "/usr/local/lib/tr-hash-server",
                 "/etc/tr-hash-server",
+                "/var/lib/tr-hash-server",
                 f"/etc/systemd/system/{SERVICE}",
                 "/etc/systemd/system/tr-hash-healthcheck.service",
                 f"/etc/systemd/system/{TIMER}",
@@ -328,9 +433,13 @@ def cmd_install(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="tr-hash-server")
     sub = root.add_subparsers(dest="command", required=True)
-    launch = sub.add_parser("launch", help="Launch TR-Hash-i64 from the host environment")
+    launch = sub.add_parser(
+        "launch", help="Launch TR-Hash-i64 from the host environment"
+    )
     launch.set_defaults(func=cmd_launch)
-    wait_gpu = sub.add_parser("wait-gpu", help="Wait until the configured CUDA GPU is usable")
+    wait_gpu = sub.add_parser(
+        "wait-gpu", help="Wait until the configured CUDA GPU is usable"
+    )
     wait_gpu.add_argument("--timeout", type=float, default=180.0)
     wait_gpu.add_argument("--interval", type=float, default=2.0)
     wait_gpu.add_argument(
@@ -340,7 +449,9 @@ def parser() -> argparse.ArgumentParser:
         help="Require continuous NVML availability before launch (default: 15s)",
     )
     wait_gpu.set_defaults(func=cmd_wait_gpu)
-    health = sub.add_parser("healthcheck", help="Check /ready and restart after repeated failures")
+    health = sub.add_parser(
+        "healthcheck", help="Check /ready and restart after repeated failures"
+    )
     health.add_argument("--state-file", default=str(DEFAULT_STATE))
     health.add_argument("--timeout", type=float, default=5.0)
     health.add_argument("--no-restart", action="store_true")
@@ -354,10 +465,41 @@ def parser() -> argparse.ArgumentParser:
     logs.add_argument("-f", "--follow", action="store_true")
     logs.add_argument("-n", "--lines", type=int, default=100)
     logs.set_defaults(func=cmd_logs)
+    run_job = sub.add_parser("run-job", help=argparse.SUPPRESS)
+    run_job.add_argument("name")
+    run_job.set_defaults(func=cmd_run_job)
+    job = sub.add_parser("job", help="Manage generic restart-safe eGPU jobs")
+    job_sub = job.add_subparsers(dest="job_command", required=True)
+    submit = job_sub.add_parser("submit", help="Install and optionally start a job")
+    submit.add_argument("config")
+    submit.add_argument("--user", default="boris")
+    submit.add_argument("--group", default="boris")
+    submit.add_argument("--no-start", action="store_true")
+    submit.add_argument("--enable-on-boot", action="store_true")
+    submit.set_defaults(func=cmd_job_submit)
+    job_sub.add_parser("list", help="List jobs").set_defaults(func=cmd_job_list)
+    for action, handler in (
+        ("status", cmd_job_status),
+        ("stop", cmd_job_stop),
+        ("resume", cmd_job_resume),
+        ("remove", cmd_job_remove),
+    ):
+        action_parser = job_sub.add_parser(action)
+        action_parser.add_argument("name")
+        action_parser.set_defaults(func=handler)
+    job_logs = job_sub.add_parser("logs")
+    job_logs.add_argument("name")
+    job_logs.add_argument("-f", "--follow", action="store_true")
+    job_logs.add_argument("-n", "--lines", type=int, default=100)
+    job_logs.set_defaults(func=cmd_job_logs)
     install = sub.add_parser("install", help="Install systemd units on Fedora")
     install.add_argument("--project", default=".")
-    install.add_argument("--user", default="boris", help="Account running the inference process")
-    install.add_argument("--group", default="boris", help="Group allowed to read host configuration")
+    install.add_argument(
+        "--user", default="boris", help="Account running the inference process"
+    )
+    install.add_argument(
+        "--group", default="boris", help="Group allowed to read host configuration"
+    )
     install.set_defaults(func=cmd_install)
     return root
 

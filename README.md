@@ -100,3 +100,32 @@ curl http://192.168.1.16:7860/ready
 Do not forward port `7860` on the Internet. LAN exposure still requires the API
 key, and remote public access should terminate TLS through a reverse proxy or a
 VPN such as WireGuard/Tailscale.
+
+## Generic eGPU jobs
+
+`TR-Hash-Server` can supervise any long-running GPU command. The manager has no
+model-size, dataset-size, token-budget, or training-framework assumptions. Copy
+`examples/training-job.toml`, then set an argv array, working directory, GPU
+ordinal and optional checkpoint contract.
+
+```bash
+sudo tr-hash-server job submit training.toml --enable-on-boot
+tr-hash-server job list
+tr-hash-server job status example-training
+tr-hash-server job logs example-training -f
+sudo tr-hash-server job stop example-training
+sudo tr-hash-server job resume example-training
+sudo tr-hash-server job remove example-training
+```
+
+Commands are executed directly without a shell. Environment variables must be
+declared in the config. If matching checkpoints exist, `{checkpoint}` in each
+`resume_arguments` entry expands to the newest artifact. External checkpoints
+are never deleted by `job remove`.
+
+Each job receives its own systemd unit and a lightweight parent supervisor. It
+probes the selected eGPU through NVML without opening a second CUDA context. Two
+consecutive probe failures terminate the child, persist `recovery_required`,
+return exit code 79 and suppress immediate restart. An optionally enabled unit
+starts again after host reboot and resumes from the newest checkpoint. A job
+that already reached `completed` is not run again automatically.
