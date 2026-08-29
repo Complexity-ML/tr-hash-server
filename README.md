@@ -16,6 +16,9 @@ This project owns the Fedora host lifecycle around that engine.
 | Default model | TR-HASH MoE 200M Full SFT v1, 32K |
 | Quantization | none |
 
+`CUDA_DEVICE_ORDER=PCI_BUS_ID` keeps CUDA ordinals aligned with `nvidia-smi`,
+so device `1` reliably selects the RTX 5060 Ti rather than the display GPU.
+
 ## Why systemd
 
 Fedora already starts and supervises services with systemd. Running the model
@@ -82,4 +85,3 @@ curl http://192.168.1.16:7860/ready
 Do not forward port `7860` on the Internet. LAN exposure still requires the API
 key, and remote public access should terminate TLS through a reverse proxy or a
 VPN such as WireGuard/Tailscale.
-

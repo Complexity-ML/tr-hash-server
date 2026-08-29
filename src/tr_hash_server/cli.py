@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import grp
 import os
 import shutil
 import subprocess
@@ -55,6 +56,15 @@ def build_server_command() -> list[str]:
     return command
 
 
+def build_launch_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["CUDA_DEVICE_ORDER"] = _value(
+        "TR_HASH_CUDA_DEVICE_ORDER", "PCI_BUS_ID"
+    )
+    environment["CUDA_VISIBLE_DEVICES"] = _value("TR_HASH_DEVICES", "1")
+    return environment
+
+
 def cmd_launch(_: argparse.Namespace) -> int:
     command = build_server_command()
     executable = Path(command[0])
@@ -63,9 +73,7 @@ def cmd_launch(_: argparse.Namespace) -> int:
     working_directory = Path(_value("TR_HASH_WORKING_DIRECTORY", "/home/boris"))
     if not working_directory.is_dir():
         raise SystemExit(f"Working directory does not exist: {working_directory}")
-    devices = _value("TR_HASH_DEVICES", "1")
-    environment = os.environ.copy()
-    environment["CUDA_VISIBLE_DEVICES"] = devices
+    environment = build_launch_environment()
     os.chdir(working_directory)
     os.execve(str(executable), command, environment)
     return 0
@@ -176,15 +184,36 @@ def cmd_install(args: argparse.Namespace) -> int:
     for source in (units / SERVICE, units / "tr-hash-healthcheck.service", units / TIMER, example):
         if not source.is_file():
             raise SystemExit(f"Missing installation file: {source}")
-    Path("/etc/tr-hash-server").mkdir(mode=0o750, parents=True, exist_ok=True)
+    service_group = grp.getgrnam(args.group).gr_gid
+    config_directory = Path("/etc/tr-hash-server")
+    config_directory.mkdir(mode=0o750, parents=True, exist_ok=True)
+    os.chown(config_directory, 0, service_group)
+    os.chmod(config_directory, 0o750)
     Path("/var/lib/tr-hash-server").mkdir(mode=0o755, parents=True, exist_ok=True)
-    shutil.copy2(script, "/usr/local/bin/tr-hash-server")
+    shutil.copyfile(script, "/usr/local/bin/tr-hash-server")
     os.chmod("/usr/local/bin/tr-hash-server", 0o755)
     for unit in (SERVICE, "tr-hash-healthcheck.service", TIMER):
-        shutil.copy2(units / unit, Path("/etc/systemd/system") / unit)
+        destination = Path("/etc/systemd/system") / unit
+        shutil.copyfile(units / unit, destination)
+        os.chmod(destination, 0o644)
     if not DEFAULT_ENV.exists():
-        shutil.copy2(example, DEFAULT_ENV)
-        os.chmod(DEFAULT_ENV, 0o640)
+        shutil.copyfile(example, DEFAULT_ENV)
+    os.chown(DEFAULT_ENV, 0, service_group)
+    os.chmod(DEFAULT_ENV, 0o640)
+    restorecon = shutil.which("restorecon")
+    if restorecon:
+        subprocess.run(
+            [
+                restorecon,
+                "-RF",
+                "/usr/local/bin/tr-hash-server",
+                "/etc/tr-hash-server",
+                f"/etc/systemd/system/{SERVICE}",
+                "/etc/systemd/system/tr-hash-healthcheck.service",
+                f"/etc/systemd/system/{TIMER}",
+            ],
+            check=True,
+        )
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     print(f"Installed units and {DEFAULT_ENV}")
     print("Edit the configuration, run doctor, then enable the service and timer.")
@@ -212,6 +241,7 @@ def parser() -> argparse.ArgumentParser:
     logs.set_defaults(func=cmd_logs)
     install = sub.add_parser("install", help="Install systemd units on Fedora")
     install.add_argument("--project", default=".")
+    install.add_argument("--group", default="boris", help="Group allowed to read host configuration")
     install.set_defaults(func=cmd_install)
     return root
 
@@ -223,4 +253,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

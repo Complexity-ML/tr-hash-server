@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from tr_hash_server.cli import build_server_command
+from tr_hash_server.cli import build_launch_environment, build_server_command
 
 
 def test_home_server_defaults(monkeypatch):
@@ -35,3 +35,10 @@ def test_cuda_graphs_can_be_disabled(monkeypatch):
     monkeypatch.setenv("TR_HASH_CUDA_GRAPHS", "0")
     assert build_server_command()[-1] == "--no-cuda-graphs"
 
+
+def test_gpu_order_matches_nvidia_smi(monkeypatch):
+    monkeypatch.delenv("TR_HASH_CUDA_DEVICE_ORDER", raising=False)
+    monkeypatch.setenv("TR_HASH_DEVICES", "1")
+    environment = build_launch_environment()
+    assert environment["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    assert environment["CUDA_VISIBLE_DEVICES"] == "1"
