@@ -24,7 +24,14 @@ def test_home_server_defaults(monkeypatch):
         "tr-hash-moe-200m",
     ]
     assert command[command.index("--quantization") + 1] == "none"
+    assert command[command.index("--device") + 1] == "cuda"
     assert "--api-key-file" not in command
+
+
+def test_explicit_device_is_forwarded(monkeypatch):
+    monkeypatch.setenv("TR_HASH_DEVICE", "cpu")
+    command = build_server_command()
+    assert command[command.index("--device") + 1] == "cpu"
 
 
 def test_optional_checkpoint_and_key(monkeypatch):

@@ -214,7 +214,7 @@ Environment=TR_HASH_DEVICES={devices}
 Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
 Environment=CUDA_VISIBLE_DEVICES={devices}
 ExecStartPre=/usr/local/bin/tr-hash-server wait-gpu --timeout 300 --stable-for {stable_seconds:g}
-ExecStart=/usr/local/bin/tr-hash-server run-job {name}
+ExecStart=/usr/bin/systemd-inhibit --what=sleep:idle --who=TR-Hash-Job --why=TR-HASH-eGPU-job --mode=block /usr/local/bin/tr-hash-server run-job {name}
 Restart=no
 TimeoutStartSec=15min
 TimeoutStopSec=5min

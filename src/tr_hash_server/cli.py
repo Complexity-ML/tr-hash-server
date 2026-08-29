@@ -36,6 +36,8 @@ def build_server_command() -> list[str]:
         _value("TR_HASH_PORT", "7860"),
         "--dtype",
         _value("TR_HASH_DTYPE", "float16"),
+        "--device",
+        _value("TR_HASH_DEVICE", "cuda"),
         "--quantization",
         _value("TR_HASH_QUANTIZATION", "none"),
         "--max-batch-size",
