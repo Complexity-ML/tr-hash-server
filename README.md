@@ -23,7 +23,9 @@ so device `1` reliably selects the RTX 5060 Ti rather than the display GPU.
 
 Fedora already starts and supervises services with systemd. Running the model
 as `boris` avoids a root-owned inference process, while the root healthcheck can
-restart the complete service after three consecutive `/ready` failures.
+restart the complete service after three consecutive `/ready` failures. The
+installer places its small management runtime under `/usr/local/lib` so SELinux
+never needs to execute Python from a home directory.
 
 ## Install on the server
 

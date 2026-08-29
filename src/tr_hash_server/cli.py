@@ -180,8 +180,14 @@ def cmd_install(args: argparse.Namespace) -> int:
     project = Path(args.project).resolve()
     units = project / "systemd"
     example = project / "config" / "server.env.example"
-    script = Path(sys.argv[0]).resolve()
-    for source in (units / SERVICE, units / "tr-hash-healthcheck.service", units / TIMER, example):
+    source_package = project / "src" / "tr_hash_server"
+    for source in (
+        units / SERVICE,
+        units / "tr-hash-healthcheck.service",
+        units / TIMER,
+        example,
+        source_package / "cli.py",
+    ):
         if not source.is_file():
             raise SystemExit(f"Missing installation file: {source}")
     service_group = grp.getgrnam(args.group).gr_gid
@@ -190,8 +196,25 @@ def cmd_install(args: argparse.Namespace) -> int:
     os.chown(config_directory, 0, service_group)
     os.chmod(config_directory, 0o750)
     Path("/var/lib/tr-hash-server").mkdir(mode=0o755, parents=True, exist_ok=True)
-    shutil.copyfile(script, "/usr/local/bin/tr-hash-server")
-    os.chmod("/usr/local/bin/tr-hash-server", 0o755)
+    library = Path("/usr/local/lib/tr-hash-server")
+    destination_package = library / "tr_hash_server"
+    library.mkdir(mode=0o755, parents=True, exist_ok=True)
+    shutil.copytree(
+        source_package,
+        destination_package,
+        dirs_exist_ok=True,
+        copy_function=shutil.copyfile,
+    )
+    launcher = Path("/usr/local/bin/tr-hash-server")
+    launcher.write_text(
+        "#!/usr/bin/python3\n"
+        "import sys\n"
+        "sys.path.insert(0, '/usr/local/lib/tr-hash-server')\n"
+        "from tr_hash_server.cli import main\n"
+        "raise SystemExit(main())\n",
+        encoding="utf-8",
+    )
+    os.chmod(launcher, 0o755)
     for unit in (SERVICE, "tr-hash-healthcheck.service", TIMER):
         destination = Path("/etc/systemd/system") / unit
         shutil.copyfile(units / unit, destination)
@@ -207,6 +230,7 @@ def cmd_install(args: argparse.Namespace) -> int:
                 restorecon,
                 "-RF",
                 "/usr/local/bin/tr-hash-server",
+                "/usr/local/lib/tr-hash-server",
                 "/etc/tr-hash-server",
                 f"/etc/systemd/system/{SERVICE}",
                 "/etc/systemd/system/tr-hash-healthcheck.service",
