@@ -1,0 +1,9 @@
+[Unit]
+Description=TR-Hash-i64 readiness healthcheck
+After=tr-hash-i64.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/tr-hash-server/server.env
+ExecStart=/usr/local/bin/tr-hash-server healthcheck
+

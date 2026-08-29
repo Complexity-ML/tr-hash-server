@@ -1,0 +1,25 @@
+[Unit]
+Description=TR-Hash-i64 home inference server
+Documentation=https://github.com/Complexity-ML/TR-Hash-i64
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=boris
+Group=boris
+EnvironmentFile=/etc/tr-hash-server/server.env
+ExecStart=/usr/local/bin/tr-hash-server launch
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=10min
+TimeoutStopSec=90s
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+

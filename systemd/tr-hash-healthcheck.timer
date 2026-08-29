@@ -1,0 +1,13 @@
+[Unit]
+Description=Check TR-Hash-i64 readiness every 15 seconds
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15s
+AccuracySec=1s
+Unit=tr-hash-healthcheck.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+
