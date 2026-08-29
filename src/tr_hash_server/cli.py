@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import grp
 import os
+import pwd
+import secrets
 import shutil
 import subprocess
 import sys
@@ -142,8 +144,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     api_key = _value("TR_HASH_API_KEY_FILE", "")
     if api_key:
         path = Path(api_key)
-        mode = path.stat().st_mode & 0o777 if path.exists() else 0
-        report(path.is_file() and mode & 0o007 == 0, "API key file", f"{path} mode={mode:04o}")
+        metadata = path.stat() if path.exists() else None
+        mode = metadata.st_mode & 0o777 if metadata else 0
+        expected_uid = pwd.getpwnam(_value("TR_HASH_SERVICE_USER", "boris")).pw_uid
+        report(
+            path.is_file() and mode == 0o600 and metadata.st_uid == expected_uid,
+            "API key file",
+            f"{path} mode={mode:04o} uid={metadata.st_uid if metadata else '-'}",
+        )
     rows = _gpu_rows()
     report(bool(rows), "NVIDIA driver", "; ".join(rows) if rows else "nvidia-smi failed")
     devices = _value("TR_HASH_DEVICES", "1")
@@ -190,6 +198,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     ):
         if not source.is_file():
             raise SystemExit(f"Missing installation file: {source}")
+    service_account = pwd.getpwnam(args.user)
     service_group = grp.getgrnam(args.group).gr_gid
     config_directory = Path("/etc/tr-hash-server")
     config_directory.mkdir(mode=0o750, parents=True, exist_ok=True)
@@ -223,6 +232,11 @@ def cmd_install(args: argparse.Namespace) -> int:
         shutil.copyfile(example, DEFAULT_ENV)
     os.chown(DEFAULT_ENV, 0, service_group)
     os.chmod(DEFAULT_ENV, 0o640)
+    api_key = config_directory / "api.key"
+    if not api_key.exists():
+        api_key.write_text(secrets.token_hex(32) + "\n", encoding="utf-8")
+    os.chown(api_key, service_account.pw_uid, service_account.pw_gid)
+    os.chmod(api_key, 0o600)
     restorecon = shutil.which("restorecon")
     if restorecon:
         subprocess.run(
@@ -265,6 +279,7 @@ def parser() -> argparse.ArgumentParser:
     logs.set_defaults(func=cmd_logs)
     install = sub.add_parser("install", help="Install systemd units on Fedora")
     install.add_argument("--project", default=".")
+    install.add_argument("--user", default="boris", help="Account running the inference process")
     install.add_argument("--group", default="boris", help="Group allowed to read host configuration")
     install.set_defaults(func=cmd_install)
     return root

@@ -38,15 +38,13 @@ python3 -m venv .venv
 sudo .venv/bin/tr-hash-server install --project "$PWD"
 ```
 
-Create the API key without exposing it in the process command line:
+The installer creates `/etc/tr-hash-server/api.key` as `boris:boris` with mode
+`0600`, which is the strict secret-file contract enforced by TR-Hash-i64. It
+never places the secret itself in the process command line. Review the host
+configuration with `sudoedit /etc/tr-hash-server/server.env`.
 
-```bash
-sudo install -o root -g boris -m 0640 /dev/null /etc/tr-hash-server/api.key
-sudo sh -c 'openssl rand -hex 32 > /etc/tr-hash-server/api.key'
-sudo chown root:boris /etc/tr-hash-server/api.key
-sudo chmod 0640 /etc/tr-hash-server/api.key
-sudoedit /etc/tr-hash-server/server.env
-```
+The readiness probe uses the same LAN address as the narrowly bound inference
+listener, rather than broadening the service to every network interface.
 
 Install or update TR-Hash-i64 inside the existing runtime:
 
