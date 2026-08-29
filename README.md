@@ -18,6 +18,8 @@ This project owns the Fedora host lifecycle around that engine.
 
 `CUDA_DEVICE_ORDER=PCI_BUS_ID` keeps CUDA ordinals aligned with `nvidia-smi`,
 so device `1` reliably selects the RTX 5060 Ti rather than the display GPU.
+CUDA Graphs start disabled on this host until an eager-generation smoke test
+passes; they can then be enabled deliberately in `server.env`.
 
 ## Why systemd
 
