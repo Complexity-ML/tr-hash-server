@@ -28,6 +28,8 @@ as `boris` avoids a root-owned inference process, while the root healthcheck can
 restart the complete service after three consecutive `/ready` failures. The
 installer places its small management runtime under `/usr/local/lib` so SELinux
 never needs to execute Python from a home directory.
+The unit also waits for the configured CUDA device through the same PyTorch
+runtime before launching, preventing an accidental CPU fallback during boot.
 
 ## Install on the server
 

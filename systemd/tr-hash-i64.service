@@ -1,14 +1,15 @@
 [Unit]
 Description=TR-Hash-i64 home inference server
 Documentation=https://github.com/Complexity-ML/TR-Hash-i64
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target nvidia-persistenced.service
+After=network-online.target nvidia-persistenced.service
 
 [Service]
 Type=simple
 User=boris
 Group=boris
 EnvironmentFile=/etc/tr-hash-server/server.env
+ExecStartPre=/usr/local/bin/tr-hash-server wait-gpu --timeout 180
 ExecStart=/usr/local/bin/tr-hash-server launch
 Restart=on-failure
 RestartSec=5s
@@ -22,4 +23,3 @@ UMask=0077
 
 [Install]
 WantedBy=multi-user.target
-

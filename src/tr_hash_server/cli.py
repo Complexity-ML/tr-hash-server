@@ -81,6 +81,36 @@ def cmd_launch(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_wait_gpu(args: argparse.Namespace) -> int:
+    executable = Path(_value("TR_HASH_EXECUTABLE", "/home/boris/pytorch/bin/tr-hash-i64"))
+    python = executable.with_name("python")
+    if not python.is_file():
+        raise SystemExit(f"PyTorch interpreter not found beside TR-Hash-i64: {python}")
+    probe = (
+        "import sys, torch; "
+        "ok=torch.cuda.is_available() and torch.cuda.device_count() == 1; "
+        "print(torch.cuda.get_device_name(0) if ok else 'CUDA unavailable'); "
+        "sys.exit(0 if ok else 1)"
+    )
+    environment = build_launch_environment()
+    deadline = time.monotonic() + args.timeout
+    last_detail = "CUDA probe did not run"
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            [str(python), "-c", probe],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        last_detail = (result.stdout or result.stderr).strip()
+        if result.returncode == 0:
+            print(f"GPU READY: {last_detail}")
+            return 0
+        time.sleep(args.interval)
+    raise SystemExit(f"GPU unavailable after {args.timeout:.0f}s: {last_detail}")
+
+
 def _ready(url: str, timeout: float) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
@@ -263,6 +293,10 @@ def parser() -> argparse.ArgumentParser:
     sub = root.add_subparsers(dest="command", required=True)
     launch = sub.add_parser("launch", help="Launch TR-Hash-i64 from the host environment")
     launch.set_defaults(func=cmd_launch)
+    wait_gpu = sub.add_parser("wait-gpu", help="Wait until the configured CUDA GPU is usable")
+    wait_gpu.add_argument("--timeout", type=float, default=180.0)
+    wait_gpu.add_argument("--interval", type=float, default=2.0)
+    wait_gpu.set_defaults(func=cmd_wait_gpu)
     health = sub.add_parser("healthcheck", help="Check /ready and restart after repeated failures")
     health.add_argument("--state-file", default=str(DEFAULT_STATE))
     health.add_argument("--timeout", type=float, default=5.0)
