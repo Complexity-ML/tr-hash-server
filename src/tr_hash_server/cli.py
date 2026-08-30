@@ -16,6 +16,7 @@ from pathlib import Path
 
 SERVICE = "tr-hash-i64.service"
 TIMER = "tr-hash-healthcheck.timer"
+TENSORBOARD_SERVICE = "tr-hash-tensorboard.service"
 DEFAULT_ENV = Path("/etc/tr-hash-server/server.env")
 DEFAULT_STATE = Path("/run/tr-hash-server/readiness-failures")
 
@@ -65,6 +66,24 @@ def build_launch_environment() -> dict[str, str]:
     environment["CUDA_DEVICE_ORDER"] = _value("TR_HASH_CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     environment["CUDA_VISIBLE_DEVICES"] = _value("TR_HASH_DEVICES", "1")
     return environment
+
+
+def build_tensorboard_command() -> list[str]:
+    """Build a private TensorBoard listener for all managed training runs."""
+    return [
+        _value("TR_HASH_TENSORBOARD_PYTHON", "/home/boris/pytorch/bin/python"),
+        "-m",
+        "tensorboard.main",
+        "--logdir",
+        _value(
+            "TR_HASH_TENSORBOARD_LOGDIR",
+            "/home/boris/complexity-framework/artifacts",
+        ),
+        "--host",
+        _value("TR_HASH_TENSORBOARD_HOST", "127.0.0.1"),
+        "--port",
+        _value("TR_HASH_TENSORBOARD_PORT", "6006"),
+    ]
 
 
 def _requested_devices() -> list[str]:
@@ -122,6 +141,17 @@ def cmd_launch(_: argparse.Namespace) -> int:
     environment = build_launch_environment()
     os.chdir(working_directory)
     os.execve(str(executable), command, environment)
+    return 0
+
+
+def cmd_tensorboard(_: argparse.Namespace) -> int:
+    command = build_tensorboard_command()
+    executable = Path(command[0])
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise SystemExit(f"TensorBoard Python executable is not usable: {executable}")
+    logdir = Path(command[command.index("--logdir") + 1])
+    logdir.mkdir(parents=True, exist_ok=True)
+    os.execv(str(executable), command)
     return 0
 
 
@@ -356,12 +386,15 @@ def cmd_install(args: argparse.Namespace) -> int:
     project = Path(args.project).resolve()
     units = project / "systemd"
     example = project / "config" / "server.env.example"
+    jobs_example = project / "config" / "jobs.env.example"
     source_package = project / "src" / "tr_hash_server"
     for source in (
         units / SERVICE,
         units / "tr-hash-healthcheck.service",
         units / TIMER,
+        units / TENSORBOARD_SERVICE,
         example,
+        jobs_example,
         source_package / "cli.py",
     ):
         if not source.is_file():
@@ -397,7 +430,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     os.chmod(launcher, 0o755)
-    for unit in (SERVICE, "tr-hash-healthcheck.service", TIMER):
+    for unit in (SERVICE, "tr-hash-healthcheck.service", TIMER, TENSORBOARD_SERVICE):
         destination = Path("/etc/systemd/system") / unit
         shutil.copyfile(units / unit, destination)
         os.chmod(destination, 0o644)
@@ -405,6 +438,11 @@ def cmd_install(args: argparse.Namespace) -> int:
         shutil.copyfile(example, DEFAULT_ENV)
     os.chown(DEFAULT_ENV, 0, service_group)
     os.chmod(DEFAULT_ENV, 0o640)
+    jobs_env = config_directory / "jobs.env"
+    if not jobs_env.exists():
+        shutil.copyfile(jobs_example, jobs_env)
+    os.chown(jobs_env, 0, service_group)
+    os.chmod(jobs_env, 0o640)
     api_key = config_directory / "api.key"
     if not api_key.exists():
         api_key.write_text(secrets.token_hex(32) + "\n", encoding="utf-8")
@@ -423,6 +461,7 @@ def cmd_install(args: argparse.Namespace) -> int:
                 f"/etc/systemd/system/{SERVICE}",
                 "/etc/systemd/system/tr-hash-healthcheck.service",
                 f"/etc/systemd/system/{TIMER}",
+                f"/etc/systemd/system/{TENSORBOARD_SERVICE}",
             ],
             check=True,
         )
@@ -439,6 +478,10 @@ def parser() -> argparse.ArgumentParser:
         "launch", help="Launch TR-Hash-i64 from the host environment"
     )
     launch.set_defaults(func=cmd_launch)
+    tensorboard = sub.add_parser(
+        "tensorboard", help="Launch the private training dashboard"
+    )
+    tensorboard.set_defaults(func=cmd_tensorboard)
     wait_gpu = sub.add_parser(
         "wait-gpu", help="Wait until the configured CUDA GPU is usable"
     )

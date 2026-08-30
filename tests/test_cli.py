@@ -8,6 +8,7 @@ from tr_hash_server.cli import (
     _probe_nvidia_devices,
     build_launch_environment,
     build_server_command,
+    build_tensorboard_command,
     cmd_healthcheck,
     cmd_wait_gpu,
 )
@@ -57,6 +58,23 @@ def test_gpu_order_matches_nvidia_smi(monkeypatch):
     environment = build_launch_environment()
     assert environment["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
     assert environment["CUDA_VISIBLE_DEVICES"] == "1"
+
+
+def test_tensorboard_defaults_are_private(monkeypatch):
+    for name in tuple(os.environ):
+        if name.startswith("TR_HASH_TENSORBOARD_"):
+            monkeypatch.delenv(name, raising=False)
+
+    command = build_tensorboard_command()
+
+    assert command[:3] == [
+        "/home/boris/pytorch/bin/python",
+        "-m",
+        "tensorboard.main",
+    ]
+    assert command[command.index("--host") + 1] == "127.0.0.1"
+    assert command[command.index("--port") + 1] == "6006"
+    assert command[command.index("--logdir") + 1].endswith("/artifacts")
 
 
 def test_gpu_probe_uses_nvidia_smi_without_pytorch(monkeypatch):

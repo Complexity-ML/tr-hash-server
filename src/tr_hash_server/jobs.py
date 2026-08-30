@@ -24,6 +24,7 @@ from typing import Any
 
 DEFAULT_JOBS_ROOT = Path("/var/lib/tr-hash-server/jobs")
 SYSTEMD_ROOT = Path("/etc/systemd/system")
+JOBS_ENV = Path("/etc/tr-hash-server/jobs.env")
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -72,8 +73,8 @@ def validate_config(data: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("working_directory must be an absolute path")
 
     devices = data.get("gpu_devices", ["1"])
-    if not isinstance(devices, list) or not devices:
-        raise ValueError("gpu_devices must be a non-empty array")
+    if not isinstance(devices, list):
+        raise ValueError("gpu_devices must be an array")
     data["gpu_devices"] = [str(device) for device in devices]
     if not all(device.isdigit() for device in data["gpu_devices"]):
         raise ValueError(
@@ -158,8 +159,15 @@ def latest_checkpoint(config: dict[str, Any]) -> Path | None:
     if not checkpoint:
         return None
     directory = Path(checkpoint["directory"])
-    candidates = list(directory.glob(checkpoint.get("pattern", "*")))
-    candidates = [candidate for candidate in candidates if candidate.exists()]
+    candidates = [
+        candidate
+        for candidate in directory.glob(checkpoint.get("pattern", "*"))
+        if candidate.is_dir()
+        and (
+            (candidate / "checkpoint.pt").is_file()
+            or (candidate / ".metadata").is_file()
+        )
+    ]
     if not candidates:
         return None
     return max(
@@ -207,19 +215,29 @@ def render_unit(config: dict[str, Any], user: str, group: str) -> str:
     devices = ",".join(config["gpu_devices"])
     power_limit = config.get("egpu", {}).get("power_limit_w")
     power_limit_lines = ""
-    if power_limit is not None:
+    if devices and power_limit is not None:
         rendered_limit = f"{float(power_limit):g}"
         power_limit_lines = "".join(
             f"ExecStartPre=+/usr/bin/nvidia-smi --id {device} "
             f"--power-limit {rendered_limit}\n"
             for device in config["gpu_devices"]
         )
+    gpu_unit = ""
+    gpu_environment = "Environment=CUDA_VISIBLE_DEVICES="
+    if devices:
+        gpu_unit = """Conflicts=tr-hash-i64.service
+Before=tr-hash-i64.service
+"""
+        gpu_environment = f"""Environment=TR_HASH_DEVICES={devices}
+Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
+Environment=CUDA_VISIBLE_DEVICES={devices}
+ExecStartPre=/usr/local/bin/tr-hash-server wait-gpu --timeout 300 --stable-for {stable_seconds:g}
+{power_limit_lines.rstrip()}""".rstrip()
     return f"""[Unit]
 Description=TR-Hash generic eGPU job: {name}
 After=network-online.target nvidia-persistenced.service
 Wants=network-online.target nvidia-persistenced.service
-Conflicts=tr-hash-i64.service
-Before=tr-hash-i64.service
+{gpu_unit.rstrip()}
 StartLimitIntervalSec=5min
 StartLimitBurst=1
 
@@ -227,11 +245,9 @@ StartLimitBurst=1
 Type=simple
 User={user}
 Group={group}
-Environment=TR_HASH_DEVICES={devices}
-Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
-Environment=CUDA_VISIBLE_DEVICES={devices}
-ExecStartPre=/usr/local/bin/tr-hash-server wait-gpu --timeout 300 --stable-for {stable_seconds:g}
-{power_limit_lines}ExecStart=/usr/local/bin/tr-hash-server run-job {name}
+EnvironmentFile=-{JOBS_ENV}
+{gpu_environment}
+ExecStart=/usr/local/bin/tr-hash-server run-job {name}
 Restart=no
 TimeoutStartSec=15min
 TimeoutStopSec=5min
@@ -316,8 +332,11 @@ def run_job(name: str, jobs_root: Path = DEFAULT_JOBS_ROOT) -> int:
         {key: str(value) for key, value in config.get("environment", {}).items()}
     )
     devices = config["gpu_devices"]
-    environment["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    environment["CUDA_VISIBLE_DEVICES"] = ",".join(devices)
+    if devices:
+        environment["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        environment["CUDA_VISIBLE_DEVICES"] = ",".join(devices)
+    else:
+        environment["CUDA_VISIBLE_DEVICES"] = ""
     working_directory = Path(config["working_directory"])
     if not working_directory.is_dir():
         raise SystemExit(f"working directory does not exist: {working_directory}")
@@ -367,6 +386,9 @@ def run_job(name: str, jobs_root: Path = DEFAULT_JOBS_ROOT) -> int:
     poll_seconds = float(config.get("egpu", {}).get("poll_seconds", 5))
     try:
         while process.poll() is None:
+            if not devices:
+                time.sleep(max(0.1, poll_seconds))
+                continue
             healthy, detail = _probe_devices(devices)
             failures = 0 if healthy else failures + 1
             if failures >= 2:

@@ -75,6 +75,14 @@ sudo -u boris --preserve-env=TR_HASH_EXECUTABLE,TR_HASH_DEVICES \
   /usr/local/bin/tr-hash-server doctor
 sudo systemctl enable --now tr-hash-i64.service
 sudo systemctl enable --now tr-hash-healthcheck.timer
+sudo systemctl enable --now tr-hash-tensorboard.service
+```
+
+Optional private Hub credentials for supervised jobs belong in
+`/etc/tr-hash-server/jobs.env` (root-owned, mode `0640`), never in a job TOML:
+
+```bash
+HF_TOKEN=hf_...
 ```
 
 The first `doctor` call is expected to report readiness as unavailable until the
@@ -86,9 +94,19 @@ model service has started. Run it again after `/ready` becomes available.
 sudo systemctl status tr-hash-i64.service
 sudo journalctl -u tr-hash-i64.service -f
 sudo systemctl restart tr-hash-i64.service
+sudo systemctl status tr-hash-tensorboard.service
 sudo /usr/local/bin/tr-hash-server doctor
 systemctl list-timers tr-hash-healthcheck.timer
 ```
+
+TensorBoard listens only on the server loopback interface. From the Mac:
+
+```bash
+ssh -N -L 6006:127.0.0.1:6006 boris@192.168.1.16
+```
+
+Then open `http://localhost:6006`. Training jobs and TensorBoard are independent:
+restarting the dashboard never interrupts a run.
 
 From the Mac, verify the authenticated endpoint with the key copied through a
 secure channel:

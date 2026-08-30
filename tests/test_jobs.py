@@ -46,6 +46,20 @@ def test_config_is_workload_size_agnostic(tmp_path):
     assert unit_name(config["name"]) == "tr-hash-job-any-training.service"
 
 
+def test_cpu_job_does_not_probe_or_reserve_the_egpu(tmp_path):
+    config = _config(tmp_path)
+    config["gpu_devices"] = []
+
+    validated = validate_config(config)
+    unit = render_unit(validated, "boris", "boris")
+
+    assert validated["gpu_devices"] == []
+    assert "wait-gpu" not in unit
+    assert "Conflicts=tr-hash-i64.service" not in unit
+    assert "Environment=CUDA_VISIBLE_DEVICES=" in unit
+    assert "EnvironmentFile=-/etc/tr-hash-server/jobs.env" in unit
+
+
 @pytest.mark.parametrize("name", ["../escape", "UPPER", "bad name", ""])
 def test_job_name_rejects_unit_and_path_injection(tmp_path, name):
     config = _config(tmp_path)
@@ -69,6 +83,8 @@ def test_latest_checkpoint_expands_resume_arguments(tmp_path):
     new = checkpoint_dir / "step_000200"
     old.mkdir()
     new.mkdir()
+    (old / "checkpoint.pt").touch()
+    (new / "checkpoint.pt").touch()
     os.utime(old, ns=(1, 1))
     os.utime(new, ns=(2, 2))
 
@@ -76,6 +92,22 @@ def test_latest_checkpoint_expands_resume_arguments(tmp_path):
     command, checkpoint = build_command(config)
     assert checkpoint == new
     assert command[-2:] == ["--resume", str(new)]
+
+
+def test_latest_checkpoint_ignores_logs_and_incomplete_directories(tmp_path):
+    config = _config(tmp_path)
+    config["checkpoint"]["pattern"] = "*"
+    checkpoint_dir = Path(config["checkpoint"]["directory"])
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "training_log.csv").write_text("step,loss\n", encoding="utf-8")
+    (checkpoint_dir / "step_000100").mkdir()
+
+    assert latest_checkpoint(config) is None
+
+    complete = checkpoint_dir / "step_000200"
+    complete.mkdir()
+    (complete / "checkpoint.pt").touch()
+    assert latest_checkpoint(config) == complete
 
 
 def test_rendered_unit_has_egpu_safety_and_no_restart(tmp_path):
