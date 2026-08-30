@@ -129,3 +129,8 @@ consecutive probe failures terminate the child, persist `recovery_required`,
 return exit code 79 and suppress immediate restart. An optionally enabled unit
 starts again after host reboot and resumes from the newest checkpoint. A job
 that already reached `completed` is not run again automatically.
+
+For an eGPU that is unstable at its stock board-power limit, set
+`egpu.power_limit_w` in the job TOML. The generated systemd unit reapplies the
+limit with root privileges after the GPU stability check, including after a
+reboot or driver reload, and fails closed if the limit cannot be applied.

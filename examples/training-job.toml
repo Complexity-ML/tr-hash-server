@@ -21,3 +21,5 @@ resume_arguments = ["--resume", "{checkpoint}"]
 [egpu]
 stable_seconds = 30
 poll_seconds = 5
+# Reapplied by the root systemd preflight after every reboot or driver reload.
+power_limit_w = 150

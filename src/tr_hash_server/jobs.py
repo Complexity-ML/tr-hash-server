@@ -112,6 +112,14 @@ def validate_config(data: dict[str, Any]) -> dict[str, Any]:
         value = egpu.get(key, default)
         if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
             raise ValueError(f"egpu.{key} must be a non-negative number")
+    power_limit_w = egpu.get("power_limit_w")
+    if power_limit_w is not None and (
+        not isinstance(power_limit_w, (int, float))
+        or isinstance(power_limit_w, bool)
+        or not math.isfinite(power_limit_w)
+        or power_limit_w <= 0
+    ):
+        raise ValueError("egpu.power_limit_w must be a positive number")
 
     return data
 
@@ -197,6 +205,15 @@ def render_unit(config: dict[str, Any], user: str, group: str) -> str:
     name = config["name"]
     stable_seconds = float(config.get("egpu", {}).get("stable_seconds", 30))
     devices = ",".join(config["gpu_devices"])
+    power_limit = config.get("egpu", {}).get("power_limit_w")
+    power_limit_lines = ""
+    if power_limit is not None:
+        rendered_limit = f"{float(power_limit):g}"
+        power_limit_lines = "".join(
+            f"ExecStartPre=+/usr/bin/nvidia-smi --id {device} "
+            f"--power-limit {rendered_limit}\n"
+            for device in config["gpu_devices"]
+        )
     return f"""[Unit]
 Description=TR-Hash generic eGPU job: {name}
 After=network-online.target nvidia-persistenced.service
@@ -214,7 +231,7 @@ Environment=TR_HASH_DEVICES={devices}
 Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
 Environment=CUDA_VISIBLE_DEVICES={devices}
 ExecStartPre=/usr/local/bin/tr-hash-server wait-gpu --timeout 300 --stable-for {stable_seconds:g}
-ExecStart=/usr/local/bin/tr-hash-server run-job {name}
+{power_limit_lines}ExecStart=/usr/local/bin/tr-hash-server run-job {name}
 Restart=no
 TimeoutStartSec=15min
 TimeoutStopSec=5min

@@ -31,7 +31,11 @@ def _config(tmp_path: Path) -> dict:
             "pattern": "step_*",
             "resume_arguments": ["--resume", "{checkpoint}"],
         },
-        "egpu": {"stable_seconds": 30, "poll_seconds": 5},
+        "egpu": {
+            "stable_seconds": 30,
+            "poll_seconds": 5,
+            "power_limit_w": 150,
+        },
     }
 
 
@@ -77,10 +81,22 @@ def test_latest_checkpoint_expands_resume_arguments(tmp_path):
 def test_rendered_unit_has_egpu_safety_and_no_restart(tmp_path):
     unit = render_unit(_config(tmp_path), "boris", "boris")
     assert "wait-gpu --timeout 300 --stable-for 30" in unit
+    assert (
+        "ExecStartPre=+/usr/bin/nvidia-smi --id 1 --power-limit 150" in unit
+    )
     assert "Restart=no" in unit
     assert "CUDA_VISIBLE_DEVICES=1" in unit
     assert "run-job any-training" in unit
     assert "Conflicts=tr-hash-i64.service" in unit
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), True, "150"])
+def test_power_limit_must_be_a_positive_finite_number(tmp_path, value):
+    config = _config(tmp_path)
+    config["egpu"]["power_limit_w"] = value
+
+    with pytest.raises(ValueError, match="power_limit_w"):
+        validate_config(config)
 
 
 def test_load_json_config(tmp_path):
