@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 
 from tr_hash_server.cli import (
@@ -12,6 +13,13 @@ from tr_hash_server.cli import (
     cmd_healthcheck,
     cmd_wait_gpu,
 )
+
+
+def test_jobs_env_example_does_not_export_an_empty_hf_token():
+    example = (Path(__file__).parents[1] / "config" / "jobs.env.example").read_text(
+        encoding="utf-8"
+    )
+    assert "\nHF_TOKEN=\n" not in example
 
 
 def test_home_server_defaults(monkeypatch):
