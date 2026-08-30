@@ -77,7 +77,7 @@ def build_tensorboard_command() -> list[str]:
         "--logdir",
         _value(
             "TR_HASH_TENSORBOARD_LOGDIR",
-            "/home/boris/complexity-framework/artifacts",
+            "/var/lib/tr-hash-server/tensorboard",
         ),
         "--host",
         _value("TR_HASH_TENSORBOARD_HOST", "127.0.0.1"),
@@ -367,7 +367,12 @@ def cmd_job_resume(args: argparse.Namespace) -> int:
 
 
 def cmd_job_remove(args: argparse.Namespace) -> int:
-    from tr_hash_server.jobs import DEFAULT_JOBS_ROOT, SYSTEMD_ROOT, unit_name
+    from tr_hash_server.jobs import (
+        DEFAULT_JOBS_ROOT,
+        DEFAULT_TENSORBOARD_ROOT,
+        SYSTEMD_ROOT,
+        unit_name,
+    )
 
     if os.geteuid() != 0:
         raise SystemExit("job remove must be run with sudo")
@@ -375,6 +380,7 @@ def cmd_job_remove(args: argparse.Namespace) -> int:
     subprocess.run(["systemctl", "disable", "--now", unit], check=False)
     (SYSTEMD_ROOT / unit).unlink(missing_ok=True)
     shutil.rmtree(DEFAULT_JOBS_ROOT / args.name, ignore_errors=True)
+    (DEFAULT_TENSORBOARD_ROOT / args.name).unlink(missing_ok=True)
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     print(f"Removed job {args.name}; external checkpoints were preserved")
     return 0
@@ -411,6 +417,9 @@ def cmd_install(args: argparse.Namespace) -> int:
     jobs_directory.mkdir(mode=0o750, parents=True, exist_ok=True)
     os.chown(jobs_directory, service_account.pw_uid, service_group)
     os.chmod(jobs_directory, 0o750)
+    tensorboard_directory = state_directory / "tensorboard"
+    tensorboard_directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    os.chmod(tensorboard_directory, 0o755)
     library = Path("/usr/local/lib/tr-hash-server")
     destination_package = library / "tr_hash_server"
     library.mkdir(mode=0o755, parents=True, exist_ok=True)

@@ -23,6 +23,7 @@ from typing import Any
 
 
 DEFAULT_JOBS_ROOT = Path("/var/lib/tr-hash-server/jobs")
+DEFAULT_TENSORBOARD_ROOT = Path("/var/lib/tr-hash-server/tensorboard")
 SYSTEMD_ROOT = Path("/etc/systemd/system")
 JOBS_ENV = Path("/etc/tr-hash-server/jobs.env")
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
@@ -106,6 +107,13 @@ def validate_config(data: dict[str, Any]) -> dict[str, Any]:
         ):
             raise ValueError("checkpoint.resume_arguments must be an array of strings")
 
+    tensorboard_logdir = data.get("tensorboard_logdir")
+    if tensorboard_logdir is not None and (
+        not isinstance(tensorboard_logdir, str)
+        or not Path(tensorboard_logdir).is_absolute()
+    ):
+        raise ValueError("tensorboard_logdir must be an absolute path")
+
     egpu = data.get("egpu", {})
     if not isinstance(egpu, dict):
         raise ValueError("egpu must be a table/object")
@@ -136,6 +144,24 @@ def _config_path(name: str, jobs_root: Path = DEFAULT_JOBS_ROOT) -> Path:
 
 def _state_path(name: str, jobs_root: Path = DEFAULT_JOBS_ROOT) -> Path:
     return _job_root(name, jobs_root) / "state.json"
+
+
+def register_tensorboard_run(
+    config: dict[str, Any],
+    tensorboard_root: Path = DEFAULT_TENSORBOARD_ROOT,
+) -> Path | None:
+    """Expose a job's event directory below TensorBoard's stable root."""
+    logdir = config.get("tensorboard_logdir")
+    if logdir is None:
+        return None
+    tensorboard_root.mkdir(mode=0o755, parents=True, exist_ok=True)
+    os.chmod(tensorboard_root, 0o755)
+    link = tensorboard_root / config["name"]
+    if link.exists() and not link.is_symlink():
+        raise RuntimeError(f"TensorBoard registry entry is not a symlink: {link}")
+    link.unlink(missing_ok=True)
+    link.symlink_to(Path(logdir), target_is_directory=True)
+    return link
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -271,6 +297,7 @@ def submit_job(
     enable_on_boot: bool,
     jobs_root: Path = DEFAULT_JOBS_ROOT,
     systemd_root: Path = SYSTEMD_ROOT,
+    tensorboard_root: Path = DEFAULT_TENSORBOARD_ROOT,
 ) -> int:
     if os.geteuid() != 0:
         raise SystemExit("job submit must be run with sudo")
@@ -289,6 +316,7 @@ def submit_job(
         _state_path(name, jobs_root), {"status": "submitted", "updated_at": time.time()}
     )
     os.chown(_state_path(name, jobs_root), account.pw_uid, group_entry.gr_gid)
+    register_tensorboard_run(config, tensorboard_root)
 
     unit = systemd_root / unit_name(name)
     unit.write_text(render_unit(config, user, group), encoding="utf-8")

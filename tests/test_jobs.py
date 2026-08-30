@@ -12,6 +12,7 @@ from tr_hash_server.jobs import (
     latest_checkpoint,
     load_config,
     render_unit,
+    register_tensorboard_run,
     run_job,
     submit_job,
     unit_name,
@@ -26,6 +27,7 @@ def _config(tmp_path: Path) -> dict:
         "working_directory": str(tmp_path),
         "gpu_devices": ["1"],
         "environment": {"PYTHONUNBUFFERED": "1"},
+        "tensorboard_logdir": str(tmp_path / "artifacts" / "tensorboard"),
         "checkpoint": {
             "directory": str(tmp_path / "checkpoints"),
             "pattern": "step_*",
@@ -137,6 +139,24 @@ def test_load_json_config(tmp_path):
     assert load_config(path)["name"] == "any-training"
 
 
+def test_tensorboard_logdir_must_be_absolute(tmp_path):
+    config = _config(tmp_path)
+    config["tensorboard_logdir"] = "artifacts/tensorboard"
+    with pytest.raises(ValueError, match="tensorboard_logdir"):
+        validate_config(config)
+
+
+def test_register_tensorboard_run_uses_stable_named_symlink(tmp_path):
+    config = _config(tmp_path)
+    registry = tmp_path / "registry"
+
+    link = register_tensorboard_run(config, registry)
+
+    assert link == registry / "any-training"
+    assert link.is_symlink()
+    assert link.readlink() == Path(config["tensorboard_logdir"])
+
+
 def test_submit_persists_config_unit_and_state(tmp_path, monkeypatch):
     config = _config(tmp_path)
     source = tmp_path / "source.json"
@@ -169,6 +189,7 @@ def test_submit_persists_config_unit_and_state(tmp_path, monkeypatch):
         enable_on_boot=False,
         jobs_root=jobs_root,
         systemd_root=systemd_root,
+        tensorboard_root=tmp_path / "tensorboard",
     )
 
     assert result == 0
@@ -178,6 +199,7 @@ def test_submit_persists_config_unit_and_state(tmp_path, monkeypatch):
         == "submitted"
     )
     assert (systemd_root / "tr-hash-job-any-training.service").is_file()
+    assert (tmp_path / "tensorboard" / "any-training").is_symlink()
     assert ["systemctl", "daemon-reload"] in commands
     assert ["systemctl", "start", "tr-hash-job-any-training.service"] in commands
 

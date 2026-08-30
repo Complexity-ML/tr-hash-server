@@ -108,6 +108,12 @@ ssh -N -L 6006:127.0.0.1:6006 boris@192.168.1.16
 Then open `http://localhost:6006`. Training jobs and TensorBoard are independent:
 restarting the dashboard never interrupts a run.
 
+Managed jobs may declare an absolute `tensorboard_logdir` in their TOML. On
+submission, JobManager registers that directory under
+`/var/lib/tr-hash-server/tensorboard/<job-name>`. TensorBoard watches this stable
+registry, so runs from different framework checkouts appear automatically and
+no project-specific artifact root is hard-coded in `server.env`.
+
 From the Mac, verify the authenticated endpoint with the key copied through a
 secure channel:
 

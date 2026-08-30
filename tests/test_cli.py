@@ -74,7 +74,9 @@ def test_tensorboard_defaults_are_private(monkeypatch):
     ]
     assert command[command.index("--host") + 1] == "127.0.0.1"
     assert command[command.index("--port") + 1] == "6006"
-    assert command[command.index("--logdir") + 1].endswith("/artifacts")
+    assert command[command.index("--logdir") + 1] == (
+        "/var/lib/tr-hash-server/tensorboard"
+    )
 
 
 def test_gpu_probe_uses_nvidia_smi_without_pytorch(monkeypatch):
