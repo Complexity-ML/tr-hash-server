@@ -9,8 +9,8 @@ This project owns the Fedora host lifecycle around that engine.
 
 | Role | Device |
 | --- | --- |
-| Display | GPU 0 — NVIDIA GeForce GTX 1660 Ti, 6 GB |
-| Inference | GPU 1 — NVIDIA GeForce RTX 5060 Ti, 16 GB |
+| Display | NVIDIA GeForce GTX 1660 Ti, 6 GB |
+| Inference | NVIDIA GeForce RTX 5060 Ti, 16 GB |
 | GPU transport | Thunderbolt 3 eGPU enclosure, 40 Gb/s negotiated link |
 | Runtime | `/home/boris/pytorch` |
 | Service manager | systemd |
@@ -18,8 +18,10 @@ This project owns the Fedora host lifecycle around that engine.
 | Runtime dtype | FP32, matching the released checkpoint metadata |
 | Quantization | none |
 
-`CUDA_DEVICE_ORDER=PCI_BUS_ID` keeps CUDA ordinals aligned with `nvidia-smi`,
-so device `1` reliably selects the RTX 5060 Ti rather than the display GPU.
+The host configuration selects the RTX 5060 Ti by GPU UUID rather than a
+numeric index. Its index can change when the Thunderbolt link disappears and
+the PCI bus is rescanned. `CUDA_DEVICE_ORDER=PCI_BUS_ID` remains set for
+deterministic ordering of any other visible devices.
 CUDA Graphs start disabled on this host until an eager-generation smoke test
 passes; they can then be enabled deliberately in `server.env`.
 
@@ -34,7 +36,10 @@ The unit waits for the configured GPU through `nvidia-smi` without importing
 PyTorch in a disposable process. This matters for the Thunderbolt eGPU: a
 PyTorch preflight would create and immediately destroy a CUDA context just
 before the inference server creates its long-lived context. The selected GPU
-must remain continuously visible for 15 seconds before launch.
+must remain continuously visible for 15 seconds before launch. Before that
+check, a root-only preflight rescans the PCI bus so the RTX can recover after a
+cold boot, then reapplies its known-stable 150 W power limit. GPU selection for
+the long-lived process remains unprivileged.
 
 Restarts are deliberately slow and bounded. A stop includes a 10-second eGPU
 cooldown, automatic restarts wait 20 seconds, and systemd permits only two
@@ -71,12 +76,16 @@ python -m pip install -U 'git+https://github.com/Complexity-ML/TR-Hash-i64.git@m
 Validate before enabling the long-running process:
 
 ```bash
-sudo -u boris --preserve-env=TR_HASH_EXECUTABLE,TR_HASH_DEVICES \
-  /usr/local/bin/tr-hash-server doctor
+sudo -u boris /usr/local/bin/tr-hash-server doctor
 sudo systemctl enable --now tr-hash-i64.service
 sudo systemctl enable --now tr-hash-healthcheck.timer
 sudo systemctl enable --now tr-hash-tensorboard.service
 ```
+
+Direct CLI commands load `/etc/tr-hash-server/server.env` automatically while
+explicit process-environment overrides still win. During an upgrade, `install`
+migrates a numeric GPU index to the stable eGPU UUID from the repository
+configuration and enforces the 150 W cap without replacing unrelated settings.
 
 Optional private Hub credentials for supervised jobs belong in
 `/etc/tr-hash-server/jobs.env` (root-owned, mode `0640`), never in a job TOML:

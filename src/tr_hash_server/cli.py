@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import grp
 import json
+import math
 import os
 import pwd
 import secrets
+import shlex
 import shutil
 import subprocess
 import time
@@ -23,6 +25,72 @@ DEFAULT_STATE = Path("/run/tr-hash-server/readiness-failures")
 
 def _value(name: str, default: str) -> str:
     return os.environ.get(name, default).strip()
+
+
+def _environment_assignments(path: Path) -> dict[str, str]:
+    """Parse the TR_HASH assignments accepted by systemd EnvironmentFile."""
+    if not path.is_file():
+        return {}
+    assignments: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        name, raw_value = line.split("=", 1)
+        name = name.strip()
+        if not name.startswith("TR_HASH_"):
+            continue
+        raw_value = raw_value.strip()
+        if raw_value.startswith(("'", '"')):
+            parsed = shlex.split(raw_value, comments=False, posix=True)
+            assignments[name] = " ".join(parsed)
+        else:
+            assignments[name] = raw_value
+    return assignments
+
+
+def _load_environment_file(path: Path = DEFAULT_ENV) -> None:
+    """Load installed host settings for direct CLI invocations."""
+    for name, value in _environment_assignments(path).items():
+        os.environ.setdefault(name, value)
+
+
+def _migrate_server_env(installed: Path, example: Path) -> None:
+    """Migrate safety-critical eGPU settings without replacing other config."""
+    desired = _environment_assignments(example)
+    desired_device = desired.get("TR_HASH_DEVICES", "")
+    if not desired_device.startswith("GPU-"):
+        raise SystemExit("server.env.example must select the eGPU by stable UUID")
+
+    lines = installed.read_text(encoding="utf-8").splitlines()
+    current = _environment_assignments(installed)
+    updates: dict[str, str] = {}
+    configured_devices = [
+        part.strip()
+        for part in current.get("TR_HASH_DEVICES", "").split(",")
+        if part.strip()
+    ]
+    if not configured_devices or not all(
+        device.startswith("GPU-") for device in configured_devices
+    ) or sum(line.strip().startswith("TR_HASH_DEVICES=") for line in lines) != 1:
+        updates["TR_HASH_DEVICES"] = desired_device
+    for name in ("TR_HASH_EGPU_POWER_LIMIT_W", "TR_HASH_EGPU_STABLE_SECONDS"):
+        assignments = sum(line.strip().startswith(f"{name}=") for line in lines)
+        if name in desired and (
+            current.get(name) != desired[name] or assignments != 1
+        ):
+            updates[name] = desired[name]
+
+    if updates:
+        lines = [
+            line
+            for line in lines
+            if not any(line.strip().startswith(f"{name}=") for name in updates)
+        ]
+        lines.extend(f"{name}={value}" for name, value in updates.items())
+    installed.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def build_server_command() -> list[str]:
@@ -174,6 +242,52 @@ def cmd_wait_gpu(args: argparse.Namespace) -> int:
     raise SystemExit(f"GPU unavailable after {args.timeout:.0f}s: {last_detail}")
 
 
+def cmd_prepare_gpu(args: argparse.Namespace) -> int:
+    """Recover the eGPU, wait for stable visibility, then cap its power."""
+    devices = _requested_devices()
+    if not devices or any(not device.startswith("GPU-") for device in devices):
+        raise SystemExit(
+            "TR_HASH_DEVICES must contain stable GPU UUID values for prepare-gpu"
+        )
+    rescan_path = Path(
+        getattr(args, "rescan_path", "/sys/bus/pci/rescan")
+    )
+    try:
+        rescan_path.write_text("1\n", encoding="utf-8")
+    except OSError as error:
+        raise SystemExit(f"PCI rescan failed at {rescan_path}: {error}") from error
+
+    configured_limit = _value("TR_HASH_EGPU_POWER_LIMIT_W", "150")
+    if not configured_limit:
+        return cmd_wait_gpu(args)
+    try:
+        power_limit = float(configured_limit)
+    except ValueError as error:
+        raise SystemExit("TR_HASH_EGPU_POWER_LIMIT_W must be a number") from error
+    if not math.isfinite(power_limit) or power_limit <= 0:
+        raise SystemExit("TR_HASH_EGPU_POWER_LIMIT_W must be a positive number")
+
+    first_visible_args = argparse.Namespace(**vars(args))
+    first_visible_args.stable_for = 0.0
+    result = cmd_wait_gpu(first_visible_args)
+    if result != 0:
+        return result
+
+    rendered_limit = f"{power_limit:g}"
+    for device in devices:
+        subprocess.run(
+            [
+                "nvidia-smi",
+                "--id",
+                device,
+                "--power-limit",
+                rendered_limit,
+            ],
+            check=True,
+        )
+    return cmd_wait_gpu(args)
+
+
 def _ready(url: str, timeout: float) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
@@ -261,10 +375,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     report(
         bool(rows), "NVIDIA driver", "; ".join(rows) if rows else "nvidia-smi failed"
     )
-    devices = _value("TR_HASH_DEVICES", "1")
-    indexes = {row.split(",", 1)[0].strip() for row in rows}
-    requested = {part.strip() for part in devices.split(",") if part.strip()}
-    report(bool(requested) and requested <= indexes, "CUDA devices", devices)
+    devices_healthy, devices_detail = _probe_nvidia_devices()
+    report(devices_healthy, "CUDA devices", devices_detail)
     healthy, detail = _ready(
         _value("TR_HASH_READY_URL", "http://127.0.0.1:7860/ready"), args.timeout
     )
@@ -445,6 +557,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         os.chmod(destination, 0o644)
     if not DEFAULT_ENV.exists():
         shutil.copyfile(example, DEFAULT_ENV)
+    _migrate_server_env(DEFAULT_ENV, example)
     os.chown(DEFAULT_ENV, 0, service_group)
     os.chmod(DEFAULT_ENV, 0o640)
     jobs_env = config_directory / "jobs.env"
@@ -503,6 +616,18 @@ def parser() -> argparse.ArgumentParser:
         help="Require continuous NVML availability before launch (default: 15s)",
     )
     wait_gpu.set_defaults(func=cmd_wait_gpu)
+    prepare_gpu = sub.add_parser(
+        "prepare-gpu",
+        help="Rescan PCI, wait for the configured GPU, and apply its power limit",
+    )
+    prepare_gpu.add_argument("--timeout", type=float, default=180.0)
+    prepare_gpu.add_argument("--interval", type=float, default=2.0)
+    prepare_gpu.add_argument(
+        "--stable-for",
+        type=float,
+        default=float(_value("TR_HASH_EGPU_STABLE_SECONDS", "15")),
+    )
+    prepare_gpu.set_defaults(func=cmd_prepare_gpu)
     health = sub.add_parser(
         "healthcheck", help="Check /ready and restart after repeated failures"
     )
@@ -559,6 +684,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    _load_environment_file()
     args = parser().parse_args()
     return int(args.func(args))
 
